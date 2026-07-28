@@ -1,0 +1,218 @@
+import java.util.*;
+
+public class Elevator {
+    private static int numberOfFloors;
+    private static int numberOfElevators;
+    private static List<ElevatorCabin> elevators = new ArrayList<>();
+
+    // Clears the terminal screen smoothly across different operational systems
+    static void clearScreen() {
+        try {
+            new ProcessBuilder("cmd", "/c", "cls").inheritIO().start().waitFor();
+        } catch (Exception e) {
+            System.out.print("\033[H\033[2J");
+            System.out.flush();
+        }
+    }
+
+    // Helper to turn numeric elevator index into spreadsheet-style alpha labels (A, B... Z, AA, AB)
+    private static String generateAlphaId(int index) {
+        StringBuilder sb = new StringBuilder();
+        while (index >= 0) {
+            sb.insert(0, (char) ('A' + (index % 26)));
+            index = (index / 26) - 1;
+        }
+        return sb.toString();
+    }
+
+    // Ultra-compact visual renderer to prevent line breaks on large systems
+    static synchronized void drawBuilding() {
+        clearScreen();
+        System.out.println("=== MULTI-ELEVATOR CONTROLLER ===");
+        System.out.println("External Call: Type Floor Number (e.g., '5')");
+        System.out.println("Internal Cab Press: Type [Letter][Floor] (e.g., 'B8')\n");
+
+        // Print header label mapping
+        System.out.print(String.format("%-5s", "Flr"));
+        for (ElevatorCabin cabin : elevators) {
+            System.out.print(String.format(" %-7s", "[" + cabin.getAlphaId() + "]"));
+        }
+        System.out.println();
+        System.out.println("-".repeat(5 + (numberOfElevators * 8)));
+
+        // Render building array from top floor downwards
+        for (int i = numberOfFloors; i > 0; i--) {
+            int floorIndex = i - 1;
+            System.out.print(String.format("%-5d", floorIndex));
+
+            for (ElevatorCabin cabin : elevators) {
+                if (cabin.getCurrentFloor() == floorIndex) {
+                    // Compress doors to short symbols: < (Opening), = (Opened), > (Closing), @ (Stationary)
+                    String symbol = "@";
+                    if (cabin.getDoorStatus().contains("Open...")) symbol = "<";
+                    else if (cabin.getDoorStatus().contains("Opened")) symbol = "=";
+                    else if (cabin.getDoorStatus().contains("Close...")) symbol = ">";
+                   
+                    System.out.print(String.format(" *%-2s%-4s", cabin.getAlphaId(), symbol));
+                } else {
+                    System.out.print(" .      ");
+                }
+            }
+            System.out.println();
+        }
+        System.out.println("-".repeat(5 + (numberOfElevators * 8)));
+        System.out.print("Console Input: ");
+    }
+
+    public static void main(String[] args) {
+        Scanner sc = new Scanner(System.in);
+
+        System.out.print("Enter total floors: ");
+        numberOfFloors = sc.nextInt();
+
+        System.out.print("Enter total elevators: ");
+        numberOfElevators = sc.nextInt();
+        sc.nextLine(); // Clear scanner buffer trailing newline
+
+        // Deploy system cabins
+        for (int i = 0; i < numberOfElevators; i++) {
+            String alphaId = generateAlphaId(i);
+            int startingFloor = (i * (numberOfFloors - 1)) / Math.max(1, numberOfElevators - 1);
+            ElevatorCabin cabin = new ElevatorCabin(alphaId, startingFloor);
+            elevators.add(cabin);
+            new Thread(cabin).start();
+        }
+
+        drawBuilding();
+
+        // Main input parser loop
+        while (true) {
+            if (sc.hasNextLine()) {
+                String input = sc.nextLine().trim().toUpperCase();
+                if (input.isEmpty()) continue;
+
+                try {
+                    // Scenario A: External Call (Pure integer string input)
+                    if (input.matches("\\d+")) {
+                        int requestedFloor = Integer.parseInt(input);
+                        if (requestedFloor >= 0 && requestedFloor < numberOfFloors) {
+                            ElevatorCabin closestCabin = null;
+                            int minDistance = Integer.MAX_VALUE;
+
+                            for (ElevatorCabin cabin : elevators) {
+                                int distance = Math.abs(cabin.getCurrentFloor() - requestedFloor);
+                                if (distance < minDistance) {
+                                    minDistance = distance;
+                                    closestCabin = cabin;
+                                }
+                            }
+                            if (closestCabin != null) {
+                                closestCabin.addRequest(requestedFloor);
+                            }
+                        }
+                    }
+                    // Scenario B: Internal Panel Press (Alpha code followed by destination digits)
+                    else if (input.matches("[A-Z]+\\d+")) {
+                        String alphaPart = input.replaceAll("\\d", "");
+                        int requestedFloor = Integer.parseInt(input.replaceAll("[A-Z]", ""));
+
+                        if (requestedFloor >= 0 && requestedFloor < numberOfFloors) {
+                            // Locate specific target cabin instance matched by label
+                            for (ElevatorCabin cabin : elevators) {
+                                if (cabin.getAlphaId().equals(alphaPart)) {
+                                    cabin.addRequest(requestedFloor);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    drawBuilding();
+                } catch (Exception e) {
+                    // Restrict processing exceptions out of drawing scope safely
+                }
+            }
+        }
+    }
+
+    static class ElevatorCabin implements Runnable {
+        private final String alphaId;
+        private volatile int currentFloor;
+        private volatile String doorStatus = "";
+        private volatile String direction = "IDLE";
+
+        private final TreeSet<Integer> upRequests = new TreeSet<>();
+        private final TreeSet<Integer> downRequests = new TreeSet<>(Collections.reverseOrder());
+
+        public ElevatorCabin(String alphaId, int startingFloor) {
+            this.alphaId = alphaId;
+            this.currentFloor = startingFloor;
+        }
+
+        public String getAlphaId() { return alphaId; }
+        public int getCurrentFloor() { return currentFloor; }
+        public String getDoorStatus() { return doorStatus; }
+
+        public void addRequest(int floor) {
+            if (floor == currentFloor) return;
+            if (floor > currentFloor) {
+                synchronized (upRequests) { upRequests.add(floor); }
+            } else {
+                synchronized (downRequests) { downRequests.add(floor); }
+            }
+        }
+
+        private int getNextTarget() {
+            synchronized (upRequests) {
+                synchronized (downRequests) {
+                    if (direction.equals("UP") || direction.equals("IDLE")) {
+                        if (!upRequests.isEmpty()) return upRequests.first();
+                        if (!downRequests.isEmpty()) return downRequests.first();
+                    } else if (direction.equals("DOWN")) {
+                        if (!downRequests.isEmpty()) return downRequests.first();
+                        if (!upRequests.isEmpty()) return upRequests.first();
+                    }
+                    return -1;
+                }
+            }
+        }
+
+        @Override
+        public void run() {
+            try {
+                while (true) {
+                    int nextTarget = getNextTarget();
+
+                    if (nextTarget == -1) {
+                        direction = "IDLE";
+                        Thread.sleep(500);
+                        continue;
+                    }
+
+                    if (nextTarget > currentFloor) {
+                        direction = "UP";
+                        currentFloor++;
+                    } else if (nextTarget < currentFloor) {
+                        direction = "DOWN";
+                        currentFloor--;
+                    }
+
+                    Elevator.drawBuilding();
+                    Thread.sleep(1500);
+
+                    if (currentFloor == nextTarget) {
+                        synchronized (upRequests) { upRequests.remove(currentFloor); }
+                        synchronized (downRequests) { downRequests.remove(currentFloor); }
+
+                        doorStatus = "Open...";  Elevator.drawBuilding(); Thread.sleep(1000);
+                        doorStatus = "Opened";   Elevator.drawBuilding(); Thread.sleep(3000);
+                        doorStatus = "Close..."; Elevator.drawBuilding(); Thread.sleep(1000);
+                        doorStatus = "";         Elevator.drawBuilding();
+                    }
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+}
+
